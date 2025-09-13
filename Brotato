@@ -1,0 +1,593 @@
+import pygame
+import random
+from pygame import gfxdraw
+from pygame.math import Vector2 as vec
+
+pygame.init()
+WIDTH, HEIGHT = 1000, 700
+SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Brotato-like Arena Shooter (Boss Update)")
+
+CLOCK = pygame.time.Clock()
+FONT = pygame.font.SysFont("consolas", 22, bold=True)
+BIG_FONT = pygame.font.SysFont("consolas", 48, bold=True)
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED   = (220, 60, 60)
+GREEN = (80, 200, 80)
+YELLOW = (230, 230, 90)
+BLUE  = (100, 180, 255)
+GRAY  = (50, 50, 50)
+PURPLE = (180, 100, 255)
+ORANGE = (255, 150, 50)
+
+def draw_main_menu():
+    SCREEN.fill((30,30,40))
+    title = BIG_FONT.render("Brotato-like Arena Shooter", True, YELLOW)
+    SCREEN.blit(title, (WIDTH//2-title.get_width()//2, 120))
+    start_btn = pygame.Rect(WIDTH//2-120, 260, 240, 70)
+    pygame.draw.rect(SCREEN, GREEN, start_btn)
+    pygame.draw.rect(SCREEN, WHITE, start_btn, 3)
+    start_txt = BIG_FONT.render("START", True, BLACK)
+    SCREEN.blit(start_txt, (WIDTH//2-70, 270))
+    return start_btn
+
+def draw_difficulty_menu():
+    SCREEN.fill((30,30,40))
+    title = BIG_FONT.render("Select Difficulty", True, YELLOW)
+    SCREEN.blit(title, (WIDTH//2-title.get_width()//2, 120))
+    btns = []
+    for i, diff in enumerate(["Easy", "Medium", "Hard"]):
+        btn = pygame.Rect(WIDTH//2-120, 220+i*100, 240, 70)
+        pygame.draw.rect(SCREEN, GRAY, btn)
+        pygame.draw.rect(SCREEN, WHITE, btn, 3)
+        txt = BIG_FONT.render(diff, True, BLACK)
+        SCREEN.blit(txt, (WIDTH//2-70, 230+i*100))
+        btns.append((btn, diff))
+    return btns
+
+class Teammate:
+    def __init__(self, pos):
+        self.pos = vec(pos)
+        self.radius = 16
+        self.color = ORANGE
+        self.speed = 260
+        self.health = float('inf')
+        self.max_health = float('inf')
+        self.damage = 10
+        self.fire_cooldown = 0
+        self.target_enemy = None
+        self.weapon_stats = None
+        self.coins = 0
+        self.shop_open = False
+        self.shop_items = [
+            {"name": "Max HP +20", "cost": 10, "action": self.up_maxhp},
+            {"name": "Move Speed +20", "cost": 12, "action": self.up_speed},
+            {"name": "Damage +5", "cost": 15, "action": self.up_damage},
+        ]
+        self.roam_dir = vec(random.uniform(-1,1), random.uniform(-1,1)).normalize()
+        self.roam_timer = random.uniform(1,3)
+
+    def up_maxhp(self):
+        self.max_health += 20
+        self.health += 20
+    def up_speed(self):
+        self.speed += 20
+    def up_damage(self):
+        self.damage += 5
+
+    def update(self, dt, player, enemies, bullets):
+        # Roam randomly
+        self.roam_timer -= dt
+        if self.roam_timer <= 0:
+            self.roam_dir = vec(random.uniform(-1,1), random.uniform(-1,1)).normalize()
+            self.roam_timer = random.uniform(1,3)
+        old_pos = self.pos.copy()
+        self.pos += self.roam_dir * self.speed * dt
+        bounced = False
+        if self.pos.x < self.radius:
+            self.pos.x = self.radius
+            self.roam_dir.x = abs(self.roam_dir.x)
+            bounced = True
+        elif self.pos.x > WIDTH - self.radius:
+            self.pos.x = WIDTH - self.radius
+            self.roam_dir.x = -abs(self.roam_dir.x)
+            bounced = True
+        if self.pos.y < self.radius:
+            self.pos.y = self.radius
+            self.roam_dir.y = abs(self.roam_dir.y)
+            bounced = True
+        elif self.pos.y > HEIGHT - self.radius:
+            self.pos.y = HEIGHT - self.radius
+            self.roam_dir.y = -abs(self.roam_dir.y)
+            bounced = True
+        # If bounced, randomize direction a bit to avoid getting stuck
+        if bounced:
+            angle = random.uniform(-0.5, 0.5)
+            self.roam_dir = self.roam_dir.rotate(angle * 180).normalize()
+        # Shoot at nearest enemy
+        closest_enemy = None
+        min_dist = float('inf')
+        for e in enemies:
+            dist = (e.pos - self.pos).length_squared()
+            if dist < min_dist:
+                min_dist = dist
+                closest_enemy = e
+        if closest_enemy:
+            self.try_fire(closest_enemy.pos, bullets)
+        if self.fire_cooldown > 0:
+            self.fire_cooldown -= dt
+        # Prevent health from dropping below infinity
+        self.health = float('inf')
+
+    def try_fire(self, target_pos, bullets):
+        if self.fire_cooldown > 0:
+            return
+        self.fire_cooldown = 0.5
+        direction = target_pos - self.pos
+        if direction.length_squared() == 0:
+            return
+        vel = direction.normalize() * 600
+        bullets.append(Bullet(self.pos.copy(), vel, self.damage))
+
+    def draw(self, surf):
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), self.radius+3, (255,200,100))
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), self.radius, self.color)
+        # Draw health bar above teammate
+        bar_w = int(self.radius * 2)
+        if self.health == float('inf') or self.max_health == float('inf'):
+            hp_w = bar_w
+        else:
+            hp_w = int(bar_w * (self.health / max(1, self.max_health)))
+        x = int(self.pos.x - self.radius)
+        y = int(self.pos.y - self.radius - 10)
+        pygame.draw.rect(surf, BLACK, (x, y, bar_w, 5))
+        pygame.draw.rect(surf, GREEN, (x, y, hp_w, 5))
+        txt = FONT.render("T", True, BLACK)
+        surf.blit(txt, (int(self.pos.x)-8, int(self.pos.y)-12))
+import pygame
+import random
+from pygame import gfxdraw
+from pygame.math import Vector2 as vec
+
+pygame.init()
+WIDTH, HEIGHT = 1000, 700
+SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Brotato-like Arena Shooter (Boss Update)")
+
+CLOCK = pygame.time.Clock()
+FONT = pygame.font.SysFont("consolas", 22, bold=True)
+BIG_FONT = pygame.font.SysFont("consolas", 48, bold=True)
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED   = (220, 60, 60)
+GREEN = (80, 200, 80)
+YELLOW = (230, 230, 90)
+BLUE  = (100, 180, 255)
+GRAY  = (50, 50, 50)
+PURPLE = (180, 100, 255)
+ORANGE = (255, 150, 50)
+
+def clamp(x, a, b):
+    return max(a, min(b, x))
+
+# -------------------- BULLET --------------------
+class Bullet:
+    def __init__(self, pos, vel, damage):
+        self.pos = vec(pos)
+        self.vel = vec(vel)
+        self.damage = damage
+        self.life = 2.0
+
+    def update(self, dt):
+        self.pos += self.vel * dt
+        self.life -= dt
+
+    def draw(self, surf):
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), 5, YELLOW)
+        pygame.gfxdraw.aacircle(surf, int(self.pos.x), int(self.pos.y), 6, WHITE)
+
+# -------------------- ENEMY --------------------
+class Enemy:
+    def __init__(self, pos, hp, speed, radius=18, color=RED, type_name="Normal"):
+        self.pos = vec(pos)
+        self.hp = hp
+        self.max_hp = hp
+        self.speed = speed
+        self.radius = radius
+        self.color = color
+        self.type_name = type_name
+        self.attack_timer = 0
+
+    def update(self, dt, target_pos, bullets, enemy_bullets):
+        direction = target_pos - self.pos
+        if direction.length_squared() > 0:
+            self.pos += direction.normalize() * self.speed * dt
+        # Ranged enemy shooting
+        if self.type_name == "Ranged":
+            self.attack_timer += dt
+            if self.attack_timer >= 1.5:
+                self.attack_timer = 0
+                dir_to_player = (target_pos - self.pos).normalize()
+                enemy_bullets.append(Bullet(self.pos.copy(), dir_to_player * 400, 8))
+
+    def draw(self, surf):
+        glow_color = PURPLE if "Boss" in self.type_name else self.color
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), self.radius+4, glow_color)
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), self.radius, self.color)
+        # HP bar
+        bar_w = int(self.radius * 2 * (self.hp / max(1, self.max_hp)))
+        pygame.draw.rect(surf, BLACK, (self.pos.x - self.radius, self.pos.y - self.radius - 8, self.radius*2, 5))
+        pygame.draw.rect(surf, GREEN, (self.pos.x - self.radius, self.pos.y - self.radius - 8, bar_w, 5))
+
+# -------------------- PLAYER --------------------
+class Player:
+    def __init__(self, pos, health=120):
+        self.pos = vec(pos)
+        self.radius = 20
+        self.color = BLUE
+        self.speed = 320
+        self.health = health
+        self.max_health = health
+        self.weapons = ["Pistol", "Shotgun", "SMG"]
+        self.weapon_index = 0
+        self.fire_cooldown = 0
+        self.coins = 0
+        self.score = 0
+        self.weapon_stats = {
+            "Pistol": {"rpm": 240, "speed": 700, "damage": 15, "pellets": 1},
+            "Shotgun": {"rpm": 60, "speed": 520, "damage": 12, "pellets": 6, "spread": 18},
+            "SMG": {"rpm": 900, "speed": 750, "damage": 8, "pellets": 1},
+        }
+
+    @property
+    def weapon(self):
+        return self.weapons[self.weapon_index]
+
+    def switch_weapon(self, index):
+        if 0 <= index < len(self.weapons):
+            self.weapon_index = index
+
+    def update(self, dt, keys):
+        move = vec(0, 0)
+        if keys[pygame.K_w]: move.y -= 1
+        if keys[pygame.K_s]: move.y += 1
+        if keys[pygame.K_a]: move.x -= 1
+        if keys[pygame.K_d]: move.x += 1
+        if move.length_squared() > 0:
+            self.pos += move.normalize() * self.speed * dt
+        self.pos.x = clamp(self.pos.x, self.radius, WIDTH - self.radius)
+        self.pos.y = clamp(self.pos.y, self.radius, HEIGHT - self.radius)
+        if self.fire_cooldown > 0:
+            self.fire_cooldown -= dt
+
+    def try_fire(self, target_pos, bullets):
+        stats = self.weapon_stats[self.weapon]
+        seconds_per_shot = 60.0 / stats["rpm"]
+        if self.fire_cooldown > 0:
+            return
+        self.fire_cooldown = seconds_per_shot
+        direction = target_pos - self.pos
+        if direction.length_squared() == 0:
+            return
+        base_dir = direction.normalize()
+        pellets = stats.get("pellets", 1)
+        spread = stats.get("spread", 8)
+        for _ in range(pellets):
+            angle_offset = 0
+            if pellets > 1:
+                angle_offset = random.uniform(-spread/2, spread/2)
+            rot_dir = base_dir.rotate(angle_offset)
+            vel = rot_dir * stats["speed"]
+            bullets.append(Bullet(self.pos.copy(), vel, stats["damage"]))
+
+    def draw(self, surf, aim_pos):
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), self.radius+5, (150, 200, 255))
+        pygame.gfxdraw.filled_circle(surf, int(self.pos.x), int(self.pos.y), self.radius, self.color)
+        dir = aim_pos - self.pos
+        if dir.length_squared() > 0:
+            dir = dir.normalize()
+            pygame.draw.line(surf, WHITE, (int(self.pos.x), int(self.pos.y)), (int(self.pos.x + dir.x*30), int(self.pos.y + dir.y*30)), 3)
+        bar_w = 180
+        x = 20
+        y = HEIGHT - 40
+        pygame.draw.rect(surf, GRAY, (x, y, bar_w, 20))
+        hp_w = int(bar_w * (self.health / self.max_health))
+        pygame.draw.rect(surf, RED, (x, y, hp_w, 20))
+        pygame.draw.rect(surf, WHITE, (x-2, y-2, bar_w+4, 24), 2)
+        text = FONT.render(f"HP: {self.health}/{self.max_health}  Coins: {self.coins}  Score: {self.score}", True, WHITE)
+        surf.blit(text, (x, y-28))
+        ws = self.weapon_stats[self.weapon]
+        wep_txt = FONT.render(f"Wpn: {self.weapon} Dmg:{ws.get('damage','?')} RPM:{ws.get('rpm','?')} Pel:{ws.get('pellets',1)}", True, WHITE)
+        surf.blit(wep_txt, (WIDTH - 420, HEIGHT - 34))
+
+# -------------------- GAME --------------------
+class Game:
+    def up_maxhp(self):
+        self.player.max_health += 20
+        self.player.health += 20
+
+    def up_speed(self):
+        self.player.speed += 20
+
+    def up_damage(self):
+        for w in self.player.weapons:
+            self.player.weapon_stats[w]["damage"] += 5
+
+    def up_firerate(self):
+        for w in self.player.weapons:
+            self.player.weapon_stats[w]["rpm"] = int(self.player.weapon_stats[w]["rpm"]*1.1)
+
+    def buy_teammate(self):
+        if len(self.teammates) < 5:  # Limit to 5 teammates for balance
+            offset = vec(40 * (len(self.teammates)+1), 0)
+            tm = Teammate(self.player.pos + offset)
+            # Copy player attributes
+            tm.radius = self.player.radius
+            tm.speed = self.player.speed
+            tm.health = self.player.health
+            tm.max_health = self.player.max_health
+            tm.color = self.player.color
+            tm.fire_cooldown = self.player.fire_cooldown
+            tm.weapon_stats = self.player.weapon_stats.copy()
+            self.teammates.append(tm)
+    # ...existing code...
+
+    def up_damage(self):
+        for w in self.player.weapons:
+            self.player.weapon_stats[w]["damage"] += 5
+
+    def up_firerate(self):
+        for w in self.player.weapons:
+            self.player.weapon_stats[w]["rpm"] = int(self.player.weapon_stats[w]["rpm"]*1.1)
+    def __init__(self, difficulty="Medium"):
+        # Difficulty settings
+        if difficulty=="Easy":
+            player_health = 180
+            enemy_hp_mult = 0.7
+            spawn_rate_mult = 0.8
+        elif difficulty=="Hard":
+            player_health = 80
+            enemy_hp_mult = 1.3
+            spawn_rate_mult = 1.2
+        else:
+            player_health = 120
+            enemy_hp_mult = 1.0
+            spawn_rate_mult = 1.0
+        self.difficulty = difficulty
+        self.enemy_hp_mult = enemy_hp_mult
+        self.spawn_rate_mult = spawn_rate_mult
+        self.player = Player(vec(WIDTH/2, HEIGHT/2), health=player_health)
+        self.bullets = []
+        self.enemies = []
+        self.enemy_bullets = []
+        self.teammates = []
+        self.wave = 0
+        self.in_wave = False
+        self.spawn_timer = 0
+        self.spawn_interval = 1.0
+        self.enemies_to_spawn = 0
+        self.shop_open = True
+        self.running = True
+        self.shop_items = [
+            {"name":"Max HP +20","cost":10,"action":self.up_maxhp},
+            {"name":"Move Speed +20","cost":12,"action":self.up_speed},
+            {"name":"Damage +5","cost":15,"action":self.up_damage},
+            {"name":"Fire Rate +10%","cost":18,"action":self.up_firerate},
+            {"name":"Teammate (Follows & Shoots)","cost":50,"action":self.buy_teammate},
+        ]
+        self.player.coins = 50  # Start player with 50 coins
+
+    # -------------------- WAVE --------------------
+    # The following methods are now properly part of the Game class
+    def start_wave(self):
+        self.wave += 1
+        self.in_wave = True
+        self.enemies_to_spawn = 5 + self.wave*4
+        self.spawn_interval = max(0.3, 1.0 - self.wave*0.03)
+        self.spawn_timer = 0
+
+    def end_wave(self):
+        self.in_wave = False
+        self.shop_open = True
+
+    def spawn_enemy(self):
+        edge = random.choice(["top","bottom","left","right"])
+        if edge=="top": x,y=random.uniform(0,WIDTH), -30
+        elif edge=="bottom": x,y=random.uniform(0,WIDTH), HEIGHT+30
+        elif edge=="left": x,y=-30, random.uniform(0,HEIGHT)
+        else: x,y=WIDTH+30, random.uniform(0,HEIGHT)
+        # Decide enemy type
+        r = random.random()
+        if self.wave %10==0: type_name="Boss"; hp=300+self.wave*20; spd=50; color=ORANGE; radius=40
+        elif self.wave %5==0 and r<0.4: type_name="MiniBoss"; hp=150+self.wave*10; spd=60; color=PURPLE; radius=30
+        elif r<0.2: type_name="Fast"; hp=10+self.wave*5; spd=180; color=YELLOW; radius=14
+        elif r<0.35: type_name="Tank"; hp=80+self.wave*10; spd=30; color=RED; radius=22
+        elif r<0.5: type_name="Ranged"; hp=40+self.wave*8; spd=50; color=GREEN; radius=18
+        else: type_name="Normal"; hp=25+self.wave*5; spd=60; color=RED; radius=18
+        self.enemies.append(Enemy(vec(x,y), hp, spd, radius, color, type_name))
+
+    # -------------------- UPDATE --------------------
+    def update(self, dt, keys, mouse_pos, mouse_pressed):
+        if self.in_wave:
+            self.spawn_timer += dt
+            while self.spawn_timer >= self.spawn_interval and self.enemies_to_spawn>0:
+                self.spawn_timer -= self.spawn_interval
+                self.spawn_enemy()
+                self.enemies_to_spawn -=1
+            if self.enemies_to_spawn<=0 and not self.enemies:
+                self.end_wave()
+
+        self.player.update(dt, keys)
+        for tm in self.teammates:
+            tm.update(dt, self.player, self.enemies, self.bullets)
+        if mouse_pressed[0] and not self.shop_open:
+            self.player.try_fire(vec(mouse_pos), self.bullets)
+
+        for b in self.bullets[:]:
+            b.update(dt)
+            if b.life<=0 or not (-50<=b.pos.x<=WIDTH+50 and -50<=b.pos.y<=HEIGHT+50):
+                self.bullets.remove(b)
+
+        for e in self.enemies[:]:
+            # Find closest target (player or teammate)
+            targets = [self.player] + self.teammates
+            closest = min(targets, key=lambda t: (e.pos - t.pos).length_squared())
+            e.update(dt, closest.pos, self.bullets, self.enemy_bullets)
+            # collision
+            if (e.pos - closest.pos).length_squared() <= (e.radius+closest.radius)**2:
+                closest.health -= 8 if closest != self.player else 6
+            for b in self.bullets[:]:
+                if (b.pos - e.pos).length_squared() <= (e.radius+5)**2:
+                    e.hp -= b.damage
+                    try:
+                        self.bullets.remove(b)
+                    except:
+                        pass
+            if e.hp<=0:
+                self.enemies.remove(e)
+                if closest == self.player:
+                    self.player.coins += 1+self.wave//3
+                    self.player.score += 10
+                else:
+                    closest.coins += 1+self.wave//3
+        for eb in self.enemy_bullets[:]:
+            eb.update(dt)
+            if (eb.pos - self.player.pos).length_squared() <= self.player.radius**2:
+                self.player.health -= 10
+                self.enemy_bullets.remove(eb)
+            else:
+                for tm in self.teammates:
+                    if (eb.pos - tm.pos).length_squared() <= tm.radius**2:
+                        tm.health -= 10
+                        self.enemy_bullets.remove(eb)
+                        break
+            if eb.life<=0:
+                self.enemy_bullets.remove(eb)
+        self.teammates = [tm for tm in self.teammates if tm.health > 0]
+        if self.player.health<=0:
+            self.running=False
+
+    # -------------------- DRAW --------------------
+    def draw(self, surf, mouse_pos):
+        for i in range(HEIGHT):
+            color = (24, int(24 + i*0.15), int(30 + i*0.15))
+            pygame.draw.line(surf, color, (0,i),(WIDTH,i))
+        pygame.draw.rect(surf, WHITE, (40,40,WIDTH-80, HEIGHT-120), 2)
+        for e in self.enemies:
+            e.draw(surf)
+        for b in self.bullets:
+            b.draw(surf)
+        for eb in self.enemy_bullets:
+            eb.draw(surf)
+        for tm in self.teammates:
+            tm.draw(surf)
+        self.player.draw(surf, vec(mouse_pos))
+        wave_txt = FONT.render(f"Wave: {self.wave}  Enemies: {len(self.enemies)}", True, WHITE)
+        surf.blit(wave_txt, (WIDTH-300,10))
+        if self.shop_open:
+            self.draw_shop(surf)
+
+    # -------------------- SHOP DRAW --------------------
+    def draw_shop(self, surf):
+        w,h=520,360
+        x=WIDTH/2 - w/2
+        y=HEIGHT/2 - h/2
+        pygame.draw.rect(surf, (20,20,20), (x,y,w,h))
+        pygame.draw.rect(surf, WHITE, (x,y,w,h),2)
+        title = BIG_FONT.render("SHOP", True, YELLOW)
+        surf.blit(title, (x+180, y+10))
+        # draw items
+        for i,item in enumerate(self.shop_items):
+            item_rect = pygame.Rect(x+50, y+70+i*60, 400, 50)
+            pygame.draw.rect(surf, GRAY, item_rect)
+            pygame.draw.rect(surf, WHITE, item_rect, 2)
+            txt = FONT.render(f"{item['name']} - {item['cost']} Coins", True, WHITE)
+            surf.blit(txt, (item_rect.x+10, item_rect.y+10))
+            # click detection
+            mouse = pygame.mouse.get_pos()
+            if pygame.mouse.get_pressed()[0] and item_rect.collidepoint(mouse):
+                if self.player.coins>=item["cost"]:
+                    self.player.coins -= item["cost"]
+                    item["action"]()
+        # Only allow closing shop with space bar
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_SPACE]:
+            self.shop_open = False
+            self.start_wave()
+
+# -------------------- MAIN LOOP --------------------
+def main():
+    def draw_end_screen():
+        SCREEN.fill(BLACK)
+        go = BIG_FONT.render("YOU DIED", True, RED)
+        score = FONT.render(f"Score: {game.player.score}  Waves: {game.wave}", True, WHITE)
+        SCREEN.blit(go, (WIDTH/2-go.get_width()/2, HEIGHT/2-50))
+        SCREEN.blit(score, (WIDTH/2-score.get_width()/2, HEIGHT/2+20))
+        # Retry button
+        btn_w, btn_h = 180, 60
+        btn_x, btn_y = WIDTH//2 - btn_w//2, HEIGHT//2 + 80
+        btn_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+        pygame.draw.rect(SCREEN, GREEN, btn_rect)
+        pygame.draw.rect(SCREEN, WHITE, btn_rect, 3)
+        btn_txt = BIG_FONT.render("RETRY", True, BLACK)
+        SCREEN.blit(btn_txt, (btn_x+30, btn_y+8))
+        return btn_rect
+
+    menu_state = "main"
+    selected_diff = None
+    game = None
+    end_screen = False
+    while True:
+        dt = CLOCK.tick(60)/1000
+        mouse_pos = pygame.mouse.get_pos()
+        keys = pygame.key.get_pressed()
+        mouse_pressed = pygame.mouse.get_pressed()
+        for event in pygame.event.get():
+            if event.type==pygame.QUIT: return
+            if menu_state == "main":
+                start_btn = draw_main_menu()
+                pygame.display.flip()
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if start_btn.collidepoint(event.pos):
+                        menu_state = "difficulty"
+                break
+            elif menu_state == "difficulty":
+                btns = draw_difficulty_menu()
+                pygame.display.flip()
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    for btn, diff in btns:
+                        if btn.collidepoint(event.pos):
+                            selected_diff = diff
+                            game = Game(difficulty=diff)
+                            menu_state = "game"
+                break
+        if menu_state == "main" or menu_state == "difficulty":
+            continue
+        if not end_screen:
+            if not game.shop_open: game.update(dt, keys, mouse_pos, mouse_pressed)
+            if not game.running:
+                end_screen = True
+        if end_screen:
+            btn_rect = draw_end_screen()
+            pygame.display.flip()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if btn_rect.collidepoint(event.pos):
+                        menu_state = "main"
+                        selected_diff = None
+                        game = None
+                        end_screen = False
+                        break
+            continue
+        game.draw(SCREEN, mouse_pos)
+        pygame.display.flip()
+
+if __name__=="__main__":
+    main()
